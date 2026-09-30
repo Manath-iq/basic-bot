@@ -3,8 +3,5 @@
   "name": "darya-trainer-bot",
   "main": "worker.js",
   "compatibility_date": "2026-09-30",
-  "workers_dev": true,
-  "secrets": {
-    "required": ["BOT_TOKEN", "WEBHOOK_SECRET"]
-  }
+  "workers_dev": true
 }
