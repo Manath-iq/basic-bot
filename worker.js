@@ -153,8 +153,10 @@ const services = {
   },
 };
 
-function keyboard(rows) {
-  return { inline_keyboard: rows.map((row) => row.map(([text, callback_data]) => ({ text, callback_data }))) };
+function keyboard(buttons) {
+  return {
+    inline_keyboard: buttons.map(([text, callback_data]) => ([{ text, callback_data }])),
+  };
 }
 
 function menuKeyboard() {
