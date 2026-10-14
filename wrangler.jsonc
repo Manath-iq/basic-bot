@@ -3,5 +3,11 @@
   "name": "darya-trainer-bot",
   "main": "worker.js",
   "compatibility_date": "2026-09-30",
-  "workers_dev": true
+  "workers_dev": true,
+  "kv_namespaces": [
+    {
+      "binding": "BOT_KV",
+      "id": "073bcb718b60426f912345466b92de0f"
+    }
+  ]
 }

@@ -1,5 +1,67 @@
 import { CONTACT_URL, SETTINGS } from "./worker-config.js";
 
+// ── Admin check ────────────────────────────────────────────────────────────────
+// ADMIN_IDS — секрет в Cloudflare, несколько ID через запятую: "882613260,726186585"
+
+function isAdmin(env, userId) {
+  if (!env.ADMIN_IDS) return false;
+  const ids = env.ADMIN_IDS.split(",").map((s) => s.trim());
+  return ids.includes(String(userId));
+}
+
+// ── KV: users ──────────────────────────────────────────────────────────────────
+
+async function addUser(env, userId, username, fullName) {
+  const key = `user:${userId}`;
+  // Only write if new — saves KV write quota
+  const existing = await env.BOT_KV.get(key);
+  if (!existing) {
+    await env.BOT_KV.put(key, JSON.stringify({ username, fullName, ts: Date.now() }));
+  }
+}
+
+async function getAllUserIds(env) {
+  const ids = [];
+  let cursor;
+  do {
+    const opts = { prefix: "user:", limit: 1000 };
+    if (cursor) opts.cursor = cursor;
+    const result = await env.BOT_KV.list(opts);
+    for (const k of result.keys) {
+      const id = parseInt(k.name.slice(5), 10);
+      if (!isNaN(id)) ids.push(id);
+    }
+    if (result.list_complete) break;
+    cursor = result.cursor;
+  } while (true);
+  return ids;
+}
+
+async function countUsers(env) {
+  const ids = await getAllUserIds(env);
+  return ids.length;
+}
+
+// ── KV: admin FSM state ────────────────────────────────────────────────────────
+
+async function getState(env, adminId) {
+  const raw = await env.BOT_KV.get(`state:${adminId}`);
+  return raw ? JSON.parse(raw) : null;
+}
+
+async function setState(env, adminId, state, data = {}) {
+  // TTL 1 hour — auto-cleanup if admin abandons the flow
+  await env.BOT_KV.put(`state:${adminId}`, JSON.stringify({ state, data }), {
+    expirationTtl: 3600,
+  });
+}
+
+async function clearState(env, adminId) {
+  await env.BOT_KV.delete(`state:${adminId}`);
+}
+
+// ── Content ────────────────────────────────────────────────────────────────────
+
 const sections = {
   training: {
     text: "Выбери подходящий формат тренировки 👇",
@@ -31,7 +93,7 @@ const services = {
     action: "📩 Записаться",
     text: `🏋️ <b>ПЕРСОНАЛЬНАЯ ТРЕНИРОВКА</b>
 
-Индивидуальная тренировка один на один с Дарьей.
+Индивидуальная тренировка один на один со мной.
 
 Разберём технику, подберём нагрузку под твой уровень и цели.
 
@@ -49,17 +111,20 @@ const services = {
   split: {
     section: "training",
     action: "📩 Записаться",
-    text: `🔥 <b>СПЛИТ</b>
+    text: `🔥 <b>ТРЕНИРОВКИ В ПАРЕ</b>
 
-Формат для системной работы над телом и уверенного прогресса. Нагрузка распределяется по мышечным группам с учётом восстановления.
+Формат для эффективных тренировок с комфортной нагрузкой и дополнительной мотивацией. Занимайтесь вместе, поддерживайте друг друга и достигайте результатов!
 
 Подходит для:
 • набора мышечной массы;
-• улучшения формы;
-• развития силы.
+• улучшения физической форму;
+• развития силы и выносливости;
+• мотивации и регулярных тренировок;
+• комфортных занятий с подругой/другом.
 
-⏱ Длительность: 60 минут
-💰 Стоимость за ${SETTINGS.splitPackage}:
+💪 Преимущества: внимание тренера к каждой участнице, индивидуальный подход и поддержка друг друга.⏱ Длительность: 60 минут
+
+💰 Стоимость за 10 сплит-тренировок:
 • ${SETTINGS.splitMatchingPrice} — если нужно найти пару;
 • ${SETTINGS.splitPartnerPrice} — если приходите с подругой.
 📍 Формат: ${SETTINGS.gymLocation}
@@ -71,7 +136,7 @@ const services = {
     action: "📩 Записаться",
     text: `👥 <b>ГРУППОВАЯ ТРЕНИРОВКА</b>
 
-Тренировка в небольшой группе под руководством Дарьи — с поддержкой, контролем и мотивацией.
+Тренировка в небольшой группе под моим руководством — с поддержкой, контролем и мотивацией.
 
 Подходит, если хочешь:
 • тренироваться в компании;
@@ -79,7 +144,7 @@ const services = {
 • улучшать физическую форму.
 
 👥 Участников: ${SETTINGS.groupSize}
-⏱ Длительность: 60 минут
+⏱ Длительность: 60 минут ПН-СБ дневная 9 или 10 утра/ вечерняя 18 или 19 часов 
 💰 Стоимость: ${SETTINGS.groupPrice} / ${SETTINGS.groupPeriod}
 📍 Место: ${SETTINGS.gymLocation}
 
@@ -125,7 +190,7 @@ const services = {
     action: "📩 Записаться",
     text: `📹 <b>ТРЕНИРОВКА ПО СОЗВОНУ</b>
 
-Полноценная тренировка по видеосвязи. Дарья контролирует технику, объясняет движения и корректирует ошибки.
+Полноценная тренировка по видеосвязи. Я контролирую технику, объясняю движения и корректирую ошибки.
 
 Подходит, если ты:
 • тренируешься дома;
@@ -153,14 +218,14 @@ const services = {
   },
 };
 
-function keyboard(buttons) {
-  return {
-    inline_keyboard: buttons.map(([text, callback_data]) => ([{ text, callback_data }])),
-  };
+// ── Keyboards ──────────────────────────────────────────────────────────────────
+
+function rows(buttons) {
+  return { inline_keyboard: buttons.map(([text, cb]) => [{ text, callback_data: cb }]) };
 }
 
 function menuKeyboard() {
-  return keyboard([
+  return rows([
     ["🏋️ Записаться на тренировку", "section:training"],
     ["🥗 Курс по питанию", "section:nutrition"],
     ["💻 Онлайн тренировка", "section:online"],
@@ -169,12 +234,12 @@ function menuKeyboard() {
 }
 
 function sectionKeyboard(section) {
-  return keyboard([...sections[section].buttons, ["◀️ Назад", "menu"]]);
+  return rows([...sections[section].buttons, ["◀️ Назад", "menu"]]);
 }
 
 function serviceKeyboard(service) {
   const item = services[service];
-  return keyboard([
+  return rows([
     [item.action, "contact"],
     ["◀️ Назад", `section:${item.section}`],
     ["🏠 Главное меню", "menu"],
@@ -191,74 +256,228 @@ function contactKeyboard(back = "menu") {
   };
 }
 
-function welcome() {
+function adminKeyboard(count) {
+  return rows([
+    [`📢 Рассылка (${count} польз.)`, "admin:broadcast"],
+    ["👥 Статистика", "admin:stats"],
+  ]);
+}
+
+function broadcastConfirmKeyboard() {
+  return rows([
+    ["✅ Отправить всем", "admin:confirm_broadcast"],
+    ["✏️ Изменить текст", "admin:broadcast"],
+    ["❌ Отмена", "admin:cancel"],
+  ]);
+}
+
+// ── Texts ──────────────────────────────────────────────────────────────────────
+
+function welcomeText() {
   return `Привет! 👋\n\nЯ бот персонального тренера ${SETTINGS.trainerName}.\n\nЗдесь ты можешь узнать подробнее о тренировках, программах питания и онлайн-сопровождении.\n\nВыбирай интересующее направление ниже 👇`;
 }
 
-async function telegram(env, method, payload) {
-  const response = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, {
+function contactsText() {
+  return `📞 <b>КОНТАКТЫ</b>\n\nЕсли остались вопросы или ты не знаешь, какой формат тебе подойдёт — просто напиши мне.\n\nЯ помогу выбрать подходящий вариант 👌\n📞 ${SETTINGS.trainerPhone}\n📍 ${SETTINGS.trainerCity}`;
+}
+
+function adminPanelText(count) {
+  return `🔐 <b>Панель администратора</b>\n\nПользователей в базе: <b>${count}</b>`;
+}
+
+// ── Telegram API ───────────────────────────────────────────────────────────────
+
+async function tg(env, method, payload) {
+  const res = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!response.ok) throw new Error(`Telegram API error: ${response.status}`);
-  return response.json();
+  if (!res.ok) throw new Error(`Telegram ${method} → ${res.status}`);
+  return res.json();
 }
 
-async function sendMessage(env, chatId, text, replyMarkup) {
-  return telegram(env, "sendMessage", { chat_id: chatId, text, parse_mode: "HTML", reply_markup: replyMarkup });
-}
-
-async function editMessage(env, callback, text, replyMarkup) {
-  return telegram(env, "editMessageText", {
-    chat_id: callback.message.chat.id,
-    message_id: callback.message.message_id,
+function sendMessage(env, chatId, text, replyMarkup) {
+  return tg(env, "sendMessage", {
+    chat_id: chatId,
     text,
     parse_mode: "HTML",
     reply_markup: replyMarkup,
   });
 }
 
-async function answerCallback(env, id) {
-  return telegram(env, "answerCallbackQuery", { callback_query_id: id });
+function editMessage(env, cb, text, replyMarkup) {
+  return tg(env, "editMessageText", {
+    chat_id: cb.message.chat.id,
+    message_id: cb.message.message_id,
+    text,
+    parse_mode: "HTML",
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+  });
 }
 
-async function handleCallback(env, callback) {
-  const data = callback.data || "";
-  if (data === "menu") {
-    await editMessage(env, callback, welcome(), menuKeyboard());
-  } else if (data.startsWith("section:")) {
-    const section = data.split(":")[1];
-    if (sections[section]) await editMessage(env, callback, sections[section].text, sectionKeyboard(section));
-  } else if (data.startsWith("service:")) {
-    const service = data.split(":")[1];
-    if (services[service]) await editMessage(env, callback, services[service].text, serviceKeyboard(service));
-  } else if (data === "contacts") {
-    const text = `📞 <b>КОНТАКТЫ</b>\n\nЕсли остались вопросы или ты не знаешь, какой формат тебе подойдёт — просто напиши Дарье.\n\nОна поможет выбрать подходящий вариант 👌\n📞 ${SETTINGS.trainerPhone}\n📍 ${SETTINGS.trainerCity}`;
-    await editMessage(env, callback, text, contactKeyboard());
-  } else if (data === "contact") {
-    await editMessage(env, callback, "Отлично! 🙌\n\nНапиши Дарье напрямую — уточните удобную дату и время, а также она ответит на все вопросы.", contactKeyboard());
-  }
-  await answerCallback(env, callback.id);
+function answerCallback(env, id) {
+  return tg(env, "answerCallbackQuery", { callback_query_id: id });
 }
+
+// Редактирует сообщение; если Telegram вернул ошибку — удаляет и шлёт новое.
+async function safeEdit(env, cb, text, replyMarkup) {
+  try {
+    await editMessage(env, cb, text, replyMarkup);
+  } catch {
+    try {
+      await tg(env, "deleteMessage", {
+        chat_id: cb.message.chat.id,
+        message_id: cb.message.message_id,
+      });
+    } catch { /* ignore */ }
+    await sendMessage(env, cb.message.chat.id, text, replyMarkup);
+  }
+}
+
+// ── Handlers ───────────────────────────────────────────────────────────────────
+
+async function handleMessage(env, msg) {
+  const userId = msg.from.id;
+  const text = msg.text || "";
+
+  // Save every user who writes to the bot
+  await addUser(env, userId, msg.from.username, msg.from.first_name);
+
+  // ── /start ──
+  if (text === "/start") {
+    return sendMessage(env, msg.chat.id, welcomeText(), menuKeyboard());
+  }
+
+  // ── Admin commands ──
+  if (!isAdmin(env, userId)) return;
+
+  if (text === "/admin") {
+    const count = await countUsers(env);
+    return sendMessage(env, msg.chat.id, adminPanelText(count), adminKeyboard(count));
+  }
+
+  if (text === "/cancel") {
+    await clearState(env, userId);
+    const count = await countUsers(env);
+    return sendMessage(env, msg.chat.id, adminPanelText(count) + "\n\nРассылка отменена.", adminKeyboard(count));
+  }
+
+  // ── FSM: waiting for broadcast text ──
+  const stateData = await getState(env, userId);
+  if (stateData?.state === "waiting_broadcast") {
+    if (!text) {
+      return sendMessage(env, msg.chat.id, "⚠️ Поддерживается только текстовое сообщение. Попробуй ещё раз:");
+    }
+    await setState(env, userId, "confirm_broadcast", { text });
+    const count = await countUsers(env);
+    const divider = "─".repeat(28);
+    return sendMessage(
+      env,
+      msg.chat.id,
+      `📋 <b>Предпросмотр рассылки</b>\n\nБудет отправлено <b>${count}</b> пользователям:\n\n${divider}\n${text}\n${divider}\n\nПодтвердить отправку?`,
+      broadcastConfirmKeyboard()
+    );
+  }
+}
+
+async function handleCallback(env, cb) {
+  const data = cb.data || "";
+  const userId = cb.from.id;
+
+  try {
+    // ── Public callbacks ──
+    if (data === "menu") {
+      await safeEdit(env, cb, welcomeText(), menuKeyboard());
+    } else if (data.startsWith("section:")) {
+      const s = data.split(":")[1];
+      if (sections[s]) await safeEdit(env, cb, sections[s].text, sectionKeyboard(s));
+    } else if (data.startsWith("service:")) {
+      const s = data.split(":")[1];
+      if (services[s]) await safeEdit(env, cb, services[s].text, serviceKeyboard(s));
+    } else if (data === "contacts") {
+      await safeEdit(env, cb, contactsText(), contactKeyboard());
+    } else if (data === "contact") {
+      await safeEdit(
+        env, cb,
+        "Отлично! 🙌\n\nНапиши мне напрямую — уточним удобную дату и время, а также отвечу на все вопросы.",
+        contactKeyboard()
+      );
+
+    // ── Admin callbacks ──
+    } else if (data === "admin:stats") {
+      if (!isAdmin(env, userId)) return;
+      const count = await countUsers(env);
+      await safeEdit(env, cb, adminPanelText(count), adminKeyboard(count));
+
+    } else if (data === "admin:broadcast") {
+      if (!isAdmin(env, userId)) return;
+      await setState(env, userId, "waiting_broadcast");
+      await safeEdit(
+        env, cb,
+        "📢 <b>Рассылка</b>\n\nНапишите текст сообщения следующим сообщением.\n\nПоддерживается HTML: <b>жирный</b>, <i>курсив</i>.\n\nДля отмены отправьте /cancel"
+      );
+
+    } else if (data === "admin:confirm_broadcast") {
+      if (!isAdmin(env, userId)) return;
+
+      const stateData = await getState(env, userId);
+      const broadcastText = stateData?.data?.text;
+      if (!broadcastText) return;
+
+      await clearState(env, userId);
+      const userIds = await getAllUserIds(env);
+      await safeEdit(env, cb, `⏳ Рассылка запущена... Всего: ${userIds.length} польз.`);
+      // answerCallback вызовется в finally — это нормально
+
+      let sent = 0;
+      let failed = 0;
+      for (const uid of userIds) {
+        try {
+          await tg(env, "sendMessage", { chat_id: uid, text: broadcastText, parse_mode: "HTML" });
+          sent++;
+        } catch { failed++; }
+      }
+
+      const count = await countUsers(env);
+      await safeEdit(env, cb,
+        `✅ <b>Рассылка завершена</b>\n\n📨 Доставлено: <b>${sent}</b>\n❌ Не доставлено: <b>${failed}</b>`,
+        adminKeyboard(count)
+      );
+
+    } else if (data === "admin:cancel") {
+      if (!isAdmin(env, userId)) return;
+      await clearState(env, userId);
+      const count = await countUsers(env);
+      await safeEdit(env, cb, adminPanelText(count) + "\n\nРассылка отменена.", adminKeyboard(count));
+    }
+  } finally {
+    // Всегда закрываем спиннер кнопки, даже если выше была ошибка
+    try { await answerCallback(env, cb.id); } catch { /* ignore */ }
+  }
+}
+
+// ── Entry point ────────────────────────────────────────────────────────────────
 
 export default {
   async fetch(request, env) {
-    if (request.method !== "POST") return new Response("Darya trainer bot is running", { status: 200 });
+    if (request.method !== "POST") {
+      return new Response("Trainer bot is running ✅", { status: 200 });
+    }
     if (request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.WEBHOOK_SECRET) {
       return new Response("Unauthorized", { status: 401 });
     }
 
     try {
       const update = await request.json();
-      if (update.message?.text === "/start") {
-        await sendMessage(env, update.message.chat.id, welcome(), menuKeyboard());
+      if (update.message) {
+        await handleMessage(env, update.message);
       } else if (update.callback_query) {
         await handleCallback(env, update.callback_query);
       }
       return new Response("OK");
-    } catch (error) {
-      console.error(error);
+    } catch (err) {
+      console.error(err);
       return new Response("Internal error", { status: 500 });
     }
   },

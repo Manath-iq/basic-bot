@@ -15,6 +15,7 @@ def _value(name: str, default: str = "") -> str:
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
+    admin_id: int
     trainer_name: str
     trainer_username: str
     trainer_phone: str
@@ -43,6 +44,7 @@ class Settings:
 def load_settings() -> Settings:
     return Settings(
         bot_token=_value("BOT_TOKEN"),
+        admin_id=int(_value("ADMIN_ID", "0")),
         trainer_name=_value("TRAINER_NAME", "Ваш тренер"),
         trainer_username=_value("TRAINER_USERNAME", "trainer_username"),
         trainer_phone=_value("TRAINER_PHONE"),
