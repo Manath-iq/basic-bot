@@ -405,8 +405,7 @@ async function handleCallback(env, cb) {
     } else if (data.startsWith("service:")) {
       const s = data.split(":")[1];
       if (services[s]) {
-        const photoUrl = `${env.ASSETS_URL}/${s}.png`;
-        // Check if photo exists by trying to fetch it
+        const photoUrl = `https://darya-trainer-bot.todominate-ai.workers.dev/${s}.png`;
         const photoExists = await fetch(photoUrl, { method: 'HEAD' }).then(res => res.ok).catch(() => false);
 
         if (photoExists) {
