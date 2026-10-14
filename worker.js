@@ -293,8 +293,12 @@ async function tg(env, method, payload) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error(`Telegram ${method} → ${res.status}`);
-  return res.json();
+  const data = await res.json();
+  if (!res.ok) {
+    console.error(`Telegram ${method} failed:`, JSON.stringify(data));
+    throw new Error(`Telegram ${method} → ${res.status}`);
+  }
+  return data;
 }
 
 function sendMessage(env, chatId, text, replyMarkup) {
