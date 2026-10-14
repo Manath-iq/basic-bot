@@ -306,6 +306,16 @@ function sendMessage(env, chatId, text, replyMarkup) {
   });
 }
 
+function sendPhoto(env, chatId, photoUrl, caption, replyMarkup) {
+  return tg(env, "sendPhoto", {
+    chat_id: chatId,
+    photo: photoUrl,
+    caption,
+    parse_mode: "HTML",
+    reply_markup: replyMarkup,
+  });
+}
+
 function editMessage(env, cb, text, replyMarkup) {
   return tg(env, "editMessageText", {
     chat_id: cb.message.chat.id,
@@ -394,7 +404,21 @@ async function handleCallback(env, cb) {
       if (sections[s]) await safeEdit(env, cb, sections[s].text, sectionKeyboard(s));
     } else if (data.startsWith("service:")) {
       const s = data.split(":")[1];
-      if (services[s]) await safeEdit(env, cb, services[s].text, serviceKeyboard(s));
+      if (services[s]) {
+        const photoUrl = `${env.ASSETS_URL}/${s}.png`;
+        // Check if photo exists by trying to fetch it
+        const photoExists = await fetch(photoUrl, { method: 'HEAD' }).then(res => res.ok).catch(() => false);
+
+        if (photoExists) {
+          await tg(env, "deleteMessage", {
+            chat_id: cb.message.chat.id,
+            message_id: cb.message.message_id,
+          });
+          await sendPhoto(env, cb.message.chat.id, photoUrl, services[s].text, serviceKeyboard(s));
+        } else {
+          await safeEdit(env, cb, services[s].text, serviceKeyboard(s));
+        }
+      }
     } else if (data === "contacts") {
       await safeEdit(env, cb, contactsText(), contactKeyboard());
     } else if (data === "contact") {
