@@ -405,6 +405,21 @@ async function handleCallback(env, cb) {
     } else if (data.startsWith("service:")) {
       const s = data.split(":")[1];
       if (services[s]) {
+        try {
+          const photoUrl = `https://darya-trainer-bot.todominate-ai.workers.dev/${s}.png`;
+          const photoExists = await fetch(photoUrl, { method: 'HEAD' }).then(res => res.ok).catch(() => false);
+
+          if (photoExists) {
+            await tg(env, "deleteMessage", {
+              chat_id: cb.message.chat.id,
+              message_id: cb.message.message_id,
+            });
+            await sendPhoto(env, cb.message.chat.id, photoUrl, services[s].text, serviceKeyboard(s));
+            return;
+          }
+        } catch (e) {
+          console.error("Photo error:", e);
+        }
         await safeEdit(env, cb, services[s].text, serviceKeyboard(s));
       }
     } else if (data === "contacts") {
