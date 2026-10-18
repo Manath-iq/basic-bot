@@ -428,7 +428,14 @@ async function handleCallback(env, cb) {
           await env.BOT_KV.put("debug:last_error", `Error: ${e.message} | ${e.stack}`);
           console.error("Photo error:", e);
         }
-        await safeEdit(env, cb, services[s].text, serviceKeyboard(s));
+        // Fallback: send text message if photo sending fails or photo doesn't exist
+        try {
+          await tg(env, "deleteMessage", {
+            chat_id: cb.message.chat.id,
+            message_id: cb.message.message_id,
+          });
+        } catch {}
+        await sendMessage(env, cb.message.chat.id, services[s].text, serviceKeyboard(s));
       }
     } else if (data === "contacts") {
       await safeEdit(env, cb, contactsText(), contactKeyboard());
