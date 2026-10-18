@@ -295,8 +295,9 @@ async function tg(env, method, payload) {
   });
   const data = await res.json();
   if (!res.ok) {
+    await env.BOT_KV.put("debug:last_error", `Telegram ${method} failed: ${JSON.stringify(data)}`);
     console.error(`Telegram ${method} failed:`, JSON.stringify(data));
-    throw new Error(`Telegram ${method} → ${res.status}`);
+    throw new Error(`Telegram ${method} → ${res.status}: ${JSON.stringify(data)}`);
   }
   return data;
 }
@@ -420,8 +421,11 @@ async function handleCallback(env, cb) {
             });
             await sendPhoto(env, cb.message.chat.id, photoUrl, services[s].text, serviceKeyboard(s));
             return;
+          } else {
+            await env.BOT_KV.put("debug:last_error", `HEAD returned false for ${photoUrl}`);
           }
         } catch (e) {
+          await env.BOT_KV.put("debug:last_error", `Error: ${e.message} | ${e.stack}`);
           console.error("Photo error:", e);
         }
         await safeEdit(env, cb, services[s].text, serviceKeyboard(s));
