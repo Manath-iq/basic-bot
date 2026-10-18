@@ -499,9 +499,6 @@ export default {
     if (request.method !== "POST") {
       return new Response("Trainer bot is running ✅", { status: 200 });
     }
-    if (env.WEBHOOK_SECRET && request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.WEBHOOK_SECRET) {
-      return new Response("Unauthorized", { status: 401 });
-    }
 
     try {
       const update = await request.json();
