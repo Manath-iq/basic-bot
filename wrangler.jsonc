@@ -5,7 +5,8 @@
   "compatibility_date": "2026-09-30",
   "workers_dev": true,
   "assets": {
-    "directory": "./photos"
+    "directory": "./photos",
+    "binding": "ASSETS"
   },
   "kv_namespaces": [
     {

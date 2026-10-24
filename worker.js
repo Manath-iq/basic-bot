@@ -311,14 +311,43 @@ function sendMessage(env, chatId, text, replyMarkup) {
   });
 }
 
-function sendPhoto(env, chatId, photoUrl, caption, replyMarkup) {
-  return tg(env, "sendPhoto", {
-    chat_id: chatId,
-    photo: photoUrl,
-    caption,
-    parse_mode: "HTML",
-    reply_markup: replyMarkup,
+// Отправляет фото услуги. Первый раз загружает файл из photos/ (через binding ASSETS),
+// затем кэширует file_id в KV — повторные отправки мгновенные, без повторной загрузки.
+async function sendServicePhoto(env, chatId, service, caption, replyMarkup) {
+  const cacheKey = `photo:${service}`;
+  const base = { chat_id: chatId, caption, parse_mode: "HTML", reply_markup: replyMarkup };
+
+  const fileId = await env.BOT_KV.get(cacheKey);
+  if (fileId) {
+    try {
+      return await tg(env, "sendPhoto", { ...base, photo: fileId });
+    } catch {
+      await env.BOT_KV.delete(cacheKey); // file_id протух — загрузим заново
+    }
+  }
+
+  const asset = await env.ASSETS.fetch(new Request(`https://assets.local/${service}.png`));
+  if (!asset.ok) return null; // у услуги нет картинки
+
+  const form = new FormData();
+  for (const [k, v] of Object.entries(base)) {
+    form.append(k, typeof v === "object" ? JSON.stringify(v) : String(v));
+  }
+  form.append("photo", new File([await asset.arrayBuffer()], `${service}.png`, { type: "image/png" }));
+
+  const res = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendPhoto`, {
+    method: "POST",
+    body: form,
   });
+  const data = await res.json();
+  if (!data.ok) {
+    await env.BOT_KV.put("debug:last_error", `Telegram sendPhoto failed: ${JSON.stringify(data)}`);
+    throw new Error(`Telegram sendPhoto → ${res.status}: ${JSON.stringify(data)}`);
+  }
+
+  const sizes = data.result.photo;
+  await env.BOT_KV.put(cacheKey, sizes[sizes.length - 1].file_id);
+  return data;
 }
 
 function editMessage(env, cb, text, replyMarkup) {
@@ -410,32 +439,24 @@ async function handleCallback(env, cb) {
     } else if (data.startsWith("service:")) {
       const s = data.split(":")[1];
       if (services[s]) {
+        let sent = null;
         try {
-          const photoUrl = `https://darya-trainer-bot.todominate-ai.workers.dev/${s}.png`;
-          const photoExists = await fetch(photoUrl, { method: 'HEAD' }).then(res => res.ok).catch(() => false);
-
-          if (photoExists) {
-            await tg(env, "deleteMessage", {
-              chat_id: cb.message.chat.id,
-              message_id: cb.message.message_id,
-            });
-            await sendPhoto(env, cb.message.chat.id, photoUrl, services[s].text, serviceKeyboard(s));
-            return;
-          } else {
-            await env.BOT_KV.put("debug:last_error", `HEAD returned false for ${photoUrl}`);
-          }
+          sent = await sendServicePhoto(env, cb.message.chat.id, s, services[s].text, serviceKeyboard(s));
         } catch (e) {
-          await env.BOT_KV.put("debug:last_error", `Error: ${e.message} | ${e.stack}`);
           console.error("Photo error:", e);
         }
-        // Fallback: send text message if photo sending fails or photo doesn't exist
+        // Нет картинки или Telegram отклонил фото — показываем обычный текст
+        if (!sent) {
+          await safeEdit(env, cb, services[s].text, serviceKeyboard(s));
+          return;
+        }
+        // Фото отправлено — убираем старое сообщение с меню
         try {
           await tg(env, "deleteMessage", {
             chat_id: cb.message.chat.id,
             message_id: cb.message.message_id,
           });
-        } catch {}
-        await sendMessage(env, cb.message.chat.id, services[s].text, serviceKeyboard(s));
+        } catch { /* ignore */ }
       }
     } else if (data === "contacts") {
       await safeEdit(env, cb, contactsText(), contactKeyboard());
